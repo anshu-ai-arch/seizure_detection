@@ -1,0 +1,19 @@
+[project]
+name = "seizure_detection"
+version = "0.1.0"
+description = "Reproduction of CNN-Informer for Seizure Detection on Long-Term EEG"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "pywavelets",
+    "mne",
+    "pyyaml",
+    "torch"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest"
+]

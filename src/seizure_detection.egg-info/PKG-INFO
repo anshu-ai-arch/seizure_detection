@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: seizure_detection
+Version: 0.1.0
+Summary: Reproduction of CNN-Informer for Seizure Detection on Long-Term EEG
+Requires-Python: >=3.9
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scipy
+Requires-Dist: pywavelets
+Requires-Dist: mne
+Requires-Dist: pyyaml
+Requires-Dist: torch
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

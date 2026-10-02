@@ -1,0 +1,29 @@
+# Data and logs
+*.edf
+*.seizures
+*.pt
+*.pth
+/outputs/
+/logs/
+/data/
+/kaggle/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+.env
+
+# MacOS
+.DS_Store
+
+# Generated Audit Reports and Pipelines
+audit_report.csv
+audit_pilot.csv
+processed_data/

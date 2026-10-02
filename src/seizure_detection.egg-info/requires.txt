@@ -1,0 +1,10 @@
+numpy
+pandas
+scipy
+pywavelets
+mne
+pyyaml
+torch
+
+[dev]
+pytest
