@@ -9,10 +9,10 @@ def test_map_annotations_to_windows():
     # Window 8-12: UNRESOLVED_BOUNDARY (crosses end 11)
     # Window 12-16: NON_SEIZURE
     # Window 16-20: NON_SEIZURE
-    
+
     seizure_intervals = [(5, 11)]
     windows = map_annotations_to_windows(seizure_intervals, recording_duration_sec=20, window_sec=4)
-    
+
     assert len(windows) == 5
     assert windows[0]["status"] == "NON_SEIZURE"
     assert windows[1]["status"] == "UNRESOLVED_BOUNDARY"
@@ -22,14 +22,17 @@ def test_map_annotations_to_windows():
 
 def test_map_annotations_exact_boundaries():
     # 12 seconds total. Seizure exactly 4 to 8.
-    # Window 0-4: NON_SEIZURE
-    # Window 4-8: SEIZURE
-    # Window 8-12: NON_SEIZURE
-    
+    # Window 0-4: NON_SEIZURE (stride 4)
+    # Window 4-8: SEIZURE (stride 2)
+    # Window 6-10: UNRESOLVED_BOUNDARY (stride 4)
+
     seizure_intervals = [(4, 8)]
     windows = map_annotations_to_windows(seizure_intervals, recording_duration_sec=12, window_sec=4)
-    
+
     assert len(windows) == 3
     assert windows[0]["status"] == "NON_SEIZURE"
+    assert windows[0]["start_sec"] == 0
     assert windows[1]["status"] == "SEIZURE"
-    assert windows[2]["status"] == "NON_SEIZURE"
+    assert windows[1]["start_sec"] == 4
+    assert windows[2]["status"] == "UNRESOLVED_BOUNDARY"
+    assert windows[2]["start_sec"] == 6
