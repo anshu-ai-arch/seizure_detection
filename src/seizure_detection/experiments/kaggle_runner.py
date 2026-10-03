@@ -66,6 +66,19 @@ def run_pipeline(
         patient_recordings_processed = 0
 
         for edf_file in edf_files:
+            filename = edf_file.name
+            is_listed = filename in annotations
+            
+            if is_patient_excluded:
+                meta = get_edf_metadata(str(edf_file))
+                duration = meta.get('duration_sec') if meta.get('status') == 'success' else None
+                auditor.add_recording(
+                    patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
+                    is_patient_excluded=True, sfreq_valid=False, channels_valid=False,
+                    duration_sec=duration, annotations_valid=False, diagnostic_reason="Patient excluded by configuration"
+                )
+                continue
+                
             if limit_recordings and patient_recordings_processed >= limit_recordings:
                 break
 
@@ -154,7 +167,14 @@ def run_pipeline(
                             "status": status,
                             "channels": "|".join(expected_channels),
                             "sfreq": sfreq,
-                            "dwt_config": "db4_level5_cA5_cD5_cD4_cD3"
+                            "window_samples": window_samples,
+                            "window_duration_sec": 4.0,
+                            "stride_sec": (start_sec - windows_info[w_idx-1]["start_sec"]) if w_idx > 0 else 0.0,
+                            "wavelet": "db4",
+                            "dwt_level": 5,
+                            "retained_coefficients": "cA5,cD5,cD4,cD3",
+                            "annotation_source": "summary_parser",
+                            "annotation_status": "listed" if is_listed else "unlisted"
                         })
                         saved_windows_count += 1
 
