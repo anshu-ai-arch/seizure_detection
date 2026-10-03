@@ -56,7 +56,7 @@ def test_kaggle_runner_pipeline(mock_load_edf, mock_dataset_dir):
         data_dir=str(mock_dataset_dir),
         out_dir=str(out_dir),
         config_path="configs/preprocessing.yaml",
-        limit_recordings=None,
+        batch_size=None,
         dry_run=False
     )
     
@@ -87,7 +87,7 @@ def test_kaggle_runner_missing_channel_duration(mock_load_edf, mock_dataset_dir)
         data_dir=str(mock_dataset_dir),
         out_dir=str(out_dir),
         config_path="configs/preprocessing.yaml",
-        limit_recordings=1,
+        batch_size=1,
         dry_run=False
     )
     
@@ -123,7 +123,7 @@ def test_kaggle_runner_dry_run(mock_get_metadata, mock_dataset_dir):
         data_dir=str(mock_dataset_dir),
         out_dir=str(out_dir),
         config_path="configs/preprocessing.yaml",
-        limit_recordings=1,
+        batch_size=1,
         dry_run=True
     )
     
