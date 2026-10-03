@@ -99,6 +99,7 @@ def run_pipeline(
         
     auditor = MetadataAuditor()
     batch_manifest = []
+    processed_in_batch = []
 
     for patient_id, edf_file in pending_edfs:
         filename = edf_file.name
@@ -145,8 +146,6 @@ def run_pipeline(
                 duration_sec=duration, annotations_valid=ann_valid,
                 diagnostic_reason="Dry run inventory check" if meta.get('status') == 'success' else meta.get('reason', 'Failed')
             )
-            with open(completed_log, "a") as f:
-                f.write(rec_id + "\n")
             continue
 
         # Full processing
@@ -212,6 +211,8 @@ def run_pipeline(
                     duration_sec=duration, annotations_valid=True,
                     diagnostic_reason=f"Successfully processed {saved_windows_count} windows"
                 )
+                batch_manifest.extend(rec_manifest)
+                processed_in_batch.append(rec_id)
 
         except EDFLoadError as e:
             auditor.add_recording(
@@ -219,29 +220,26 @@ def run_pipeline(
                 is_patient_excluded=False, sfreq_valid=False, channels_valid=False,
                 duration_sec=0.0, annotations_valid=False, diagnostic_reason=str(e)
             )
+            processed_in_batch.append(rec_id)
         except MissingChannelError as e:
             auditor.add_recording(
                 patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                 is_patient_excluded=False, sfreq_valid=True, channels_valid=False,
                 duration_sec=duration, annotations_valid=False, diagnostic_reason=str(e)
             )
+            processed_in_batch.append(rec_id)
         except Exception as e:
             auditor.add_recording(
                 patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                 is_patient_excluded=False, sfreq_valid=False, channels_valid=False,
                 duration_sec=duration, annotations_valid=False, diagnostic_reason=f"Unexpected error: {str(e)}"
             )
+            processed_in_batch.append(rec_id)
 
-        # Mark recording as complete ONLY if everything succeeded.
-        batch_manifest.extend(rec_manifest)
-        with open(completed_log, "a") as f:
-            f.write(rec_id + "\n")
-
-    if not dry_run and auditor.records:
+    if not dry_run and processed_in_batch:
         import time
         shard_id = f"shard_{int(time.time())}"
         
-        # Save manifest and audit to temp_dir before zipping
         manifest_df = pd.DataFrame(batch_manifest) if batch_manifest else pd.DataFrame()
         if not manifest_df.empty:
             manifest_df.to_csv(temp_dir / f"{shard_id}_manifest.csv", index=False)
@@ -249,31 +247,47 @@ def run_pipeline(
         audit_df = pd.DataFrame(auditor.records)
         audit_df.to_csv(temp_dir / f"{shard_id}_audit.csv", index=False)
         
-        zip_path = shards_dir / f"{shard_id}.zip"
+        temp_zip_path = shards_dir / f"{shard_id}_temp.zip"
+        final_zip_path = shards_dir / f"{shard_id}.zip"
         
-        # Create Zip
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Atomic zip creation
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for fpath in temp_dir.iterdir():
                 if fpath.is_file():
                     zf.write(fpath, arcname=fpath.name)
                     
         # Verify Zip
-        if not verify_zip(zip_path):
-            logger.error(f"Shard {shard_id} failed zip verification! Aborting cleanup.")
-            zip_path.unlink()
+        if not verify_zip(temp_zip_path):
+            logger.error(f"Shard {shard_id} failed zip verification! Aborting batch commit.")
+            temp_zip_path.unlink()
             return
             
         # Checksum
-        sha256 = compute_sha256(zip_path)
+        sha256 = compute_sha256(temp_zip_path)
         with open(shards_dir / f"{shard_id}.sha256", "w") as f:
             f.write(f"{sha256}  {shard_id}.zip\n")
             
-        # Safe cleanup
+        # Rename to final
+        temp_zip_path.rename(final_zip_path)
+        
+        # Write completion logs only after zip is finalized
+        with open(completed_log, "a") as f:
+            for rec_id in processed_in_batch:
+                f.write(rec_id + "\n")
+                
+        # Do not automatically delete source arrays per prompt rule.
+        # Clean up temp_dir to prevent cross-contamination for next batch.
+        # Wait, if we clean up temp_dir, we delete source arrays. 
+        # The prompt says: "Never delete source arrays until a verified archive exists AND durable persistence is confirmed."
+        # So we should move them to a 'staged_arrays' folder and tell the user to delete them.
+        staged_dir = out_path / "staged_arrays"
+        staged_dir.mkdir(exist_ok=True)
         for fpath in temp_dir.iterdir():
             if fpath.is_file():
-                fpath.unlink()
+                fpath.rename(staged_dir / fpath.name)
                 
         logger.info(f"Successfully finalized {shard_id}.zip with {len(batch_manifest)} windows.")
+        logger.info(f"Source arrays moved to {staged_dir}. Delete them manually ONLY after pushing shards to Kaggle Datasets.")
 
     audit_file = out_path / "audit_report.csv"
     if auditor.records:

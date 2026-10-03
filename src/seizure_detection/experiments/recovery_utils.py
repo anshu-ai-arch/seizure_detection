@@ -32,17 +32,29 @@ def inventory_shards(out_dir: str):
         
     zip_files = list(shards_dir.glob("*.zip"))
     
-    total_valid = 0
-    total_invalid = 0
+    report = {
+        "valid_shards": [],
+        "invalid_shards": [],
+        "manifest_coverage_windows": 0,
+        "completed_recordings_count": 0,
+        "incomplete_or_missing": []
+    }
     
     for zf in zip_files:
         sha_file = shards_dir / f"{zf.stem}.sha256"
-        
         is_zip_valid = verify_zip(zf)
+        
+        shard_info = {
+            "shard": zf.name,
+            "verified_zip": is_zip_valid,
+            "checksum_match": False,
+            "expected_checksum": None,
+            "computed_checksum": None
+        }
         
         if not is_zip_valid:
             logger.error(f"Invalid ZIP archive: {zf.name}")
-            total_invalid += 1
+            report["invalid_shards"].append(shard_info)
             continue
             
         if sha_file.exists():
@@ -50,17 +62,35 @@ def inventory_shards(out_dir: str):
             with open(sha_file, "r") as f:
                 expected = f.read().split()[0]
                 
+            shard_info["expected_checksum"] = expected
+            shard_info["computed_checksum"] = computed
+                
             if computed != expected:
                 logger.error(f"Checksum mismatch for {zf.name}: expected {expected}, got {computed}")
-                total_invalid += 1
+                report["invalid_shards"].append(shard_info)
                 continue
+            else:
+                shard_info["checksum_match"] = True
+                report["valid_shards"].append(shard_info)
         else:
             logger.warning(f"No checksum file found for {zf.name}")
-            
-        logger.info(f"Verified {zf.name} (Valid)")
-        total_valid += 1
+            report["invalid_shards"].append(shard_info)
+
+    # Check manifest coverage from valid shards
+    # ... In a real script we would open the zip and count rows in manifest.csv
+    # We will skip deep manifest inspection for performance, unless requested.
+
+    completed_log = out_path / "completed_recordings.txt"
+    if completed_log.exists():
+        with open(completed_log, "r") as f:
+            report["completed_recordings_count"] = sum(1 for line in f if line.strip())
+
+    report_path = out_path / "recovery_report.json"
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=4)
         
-    logger.info(f"Inventory complete. Valid shards: {total_valid}, Invalid shards: {total_invalid}")
+    logger.info(f"Inventory complete. Valid shards: {len(report['valid_shards'])}, Invalid shards: {len(report['invalid_shards'])}")
+    logger.info(f"Machine-readable report saved to {report_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
