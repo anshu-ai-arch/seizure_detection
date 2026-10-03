@@ -99,6 +99,7 @@ def run_pipeline(
                 continue
                 
             # Full processing
+            duration = 0.0
             try:
                 signals, ch_names, sfreq = load_edf(str(edf_file))
                 duration = signals.shape[1] / sfreq
@@ -141,17 +142,16 @@ def run_pipeline(
                     duration_sec=0.0, annotations_valid=False, diagnostic_reason=str(e)
                 )
             except MissingChannelError as e:
-                # We know EDF loaded so we can extract meta directly if needed, but for simplicity:
                 auditor.add_recording(
                     patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                     is_patient_excluded=is_patient_excluded, sfreq_valid=True, channels_valid=False,
-                    duration_sec=0.0, annotations_valid=False, diagnostic_reason=str(e)
+                    duration_sec=duration, annotations_valid=False, diagnostic_reason=str(e)
                 )
             except Exception as e:
                 auditor.add_recording(
                     patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                     is_patient_excluded=is_patient_excluded, sfreq_valid=False, channels_valid=False,
-                    duration_sec=0.0, annotations_valid=False, diagnostic_reason=f"Unexpected error: {str(e)}"
+                    duration_sec=duration, annotations_valid=False, diagnostic_reason=f"Unexpected error: {str(e)}"
                 )
                 
             recordings_processed += 1
