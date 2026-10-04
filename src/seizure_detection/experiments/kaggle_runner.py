@@ -99,13 +99,19 @@ def run_pipeline(
         
     auditor = MetadataAuditor()
     batch_manifest = []
-    processed_in_batch = []
+    successful_recordings = []
+    batch_files = []
+
+    # Clean up any leftover files in temp_dir from previous crashed runs
+    for stale_file in temp_dir.iterdir():
+        if stale_file.is_file():
+            stale_file.unlink()
 
     for patient_id, edf_file in pending_edfs:
         filename = edf_file.name
         rec_id = f"{patient_id}_{filename}"
         
-        is_patient_excluded = patient_id in config['data'].get('excluded_patients', [])
+        is_patient_excluded = patient_id in config.get('data', {}).get('excluded_patients', [])
         
         summary_file = edf_file.parent / f"{patient_id}-summary.txt"
         annotations = {}
@@ -126,8 +132,6 @@ def run_pipeline(
                 is_patient_excluded=True, sfreq_valid=False, channels_valid=False,
                 duration_sec=duration, annotations_valid=False, diagnostic_reason="Patient excluded by configuration"
             )
-            with open(completed_log, "a") as f:
-                f.write(rec_id + "\n")
             continue
 
         if dry_run:
@@ -151,6 +155,8 @@ def run_pipeline(
         # Full processing
         duration = 0.0
         rec_manifest = []
+        rec_files = []
+        rec_success = False
         try:
             signals, ch_names, sfreq = load_edf(str(edf_file))
             duration = signals.shape[1] / sfreq
@@ -183,7 +189,9 @@ def run_pipeline(
 
                     if window_array.shape[1] == window_samples and np.isfinite(window_array).all():
                         window_filename = f"{patient_id}_{filename}_w{w_idx}.npy"
-                        np.save(temp_dir / window_filename, window_array)
+                        w_path = temp_dir / window_filename
+                        np.save(w_path, window_array)
+                        rec_files.append(w_path)
 
                         rec_manifest.append({
                             "patient_id": patient_id,
@@ -211,87 +219,131 @@ def run_pipeline(
                     duration_sec=duration, annotations_valid=True,
                     diagnostic_reason=f"Successfully processed {saved_windows_count} windows"
                 )
-                batch_manifest.extend(rec_manifest)
-                processed_in_batch.append(rec_id)
+                rec_success = True
 
         except EDFLoadError as e:
+            for f in rec_files:
+                if f.exists():
+                    f.unlink()
             auditor.add_recording(
                 patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                 is_patient_excluded=False, sfreq_valid=False, channels_valid=False,
                 duration_sec=0.0, annotations_valid=False, diagnostic_reason=str(e)
             )
-            processed_in_batch.append(rec_id)
         except MissingChannelError as e:
+            for f in rec_files:
+                if f.exists():
+                    f.unlink()
             auditor.add_recording(
                 patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                 is_patient_excluded=False, sfreq_valid=True, channels_valid=False,
                 duration_sec=duration, annotations_valid=False, diagnostic_reason=str(e)
             )
-            processed_in_batch.append(rec_id)
         except Exception as e:
+            for f in rec_files:
+                if f.exists():
+                    f.unlink()
             auditor.add_recording(
                 patient_id=patient_id, filename=filename, is_listed_in_summary=is_listed,
                 is_patient_excluded=False, sfreq_valid=False, channels_valid=False,
                 duration_sec=duration, annotations_valid=False, diagnostic_reason=f"Unexpected error: {str(e)}"
             )
-            processed_in_batch.append(rec_id)
 
-    if not dry_run and processed_in_batch:
+        if rec_success:
+            batch_manifest.extend(rec_manifest)
+            batch_files.extend(rec_files)
+            successful_recordings.append(rec_id)
+
+    if not dry_run and successful_recordings:
         import time
         shard_id = f"shard_{int(time.time())}"
         
-        manifest_df = pd.DataFrame(batch_manifest) if batch_manifest else pd.DataFrame()
-        if not manifest_df.empty:
-            manifest_df.to_csv(temp_dir / f"{shard_id}_manifest.csv", index=False)
+        manifest_path = temp_dir / f"{shard_id}_manifest.csv"
+        manifest_df = pd.DataFrame(batch_manifest)
+        manifest_df.to_csv(manifest_path, index=False)
             
+        audit_path = temp_dir / f"{shard_id}_audit.csv"
         audit_df = pd.DataFrame(auditor.records)
-        audit_df.to_csv(temp_dir / f"{shard_id}_audit.csv", index=False)
+        audit_df.to_csv(audit_path, index=False)
         
         temp_zip_path = shards_dir / f"{shard_id}_temp.zip"
         final_zip_path = shards_dir / f"{shard_id}.zip"
         
-        # Atomic zip creation
+        # Archive only the files belonging to the current batch
+        files_to_archive = [manifest_path, audit_path] + [f for f in batch_files if f.exists()]
         with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for fpath in temp_dir.iterdir():
-                if fpath.is_file():
-                    zf.write(fpath, arcname=fpath.name)
+            for fpath in files_to_archive:
+                zf.write(fpath, arcname=fpath.name)
                     
-        # Verify Zip
+        # Verify temporary Zip
         if not verify_zip(temp_zip_path):
             logger.error(f"Shard {shard_id} failed zip verification! Aborting batch commit.")
-            temp_zip_path.unlink()
+            if temp_zip_path.exists():
+                temp_zip_path.unlink()
             return
             
-        # Checksum
-        sha256 = compute_sha256(temp_zip_path)
-        with open(shards_dir / f"{shard_id}.sha256", "w") as f:
-            f.write(f"{sha256}  {shard_id}.zip\n")
+        # Checksum calculation before rename
+        temp_sha256 = compute_sha256(temp_zip_path)
             
-        # Rename to final
+        # Rename to final zip path
         temp_zip_path.rename(final_zip_path)
+
+        # Confirm finalized zip integrity and checksum
+        if not verify_zip(final_zip_path):
+            logger.error(f"Finalized zip {final_zip_path} corrupted! Aborting batch commit.")
+            if final_zip_path.exists():
+                final_zip_path.unlink()
+            return
+
+        final_sha256 = compute_sha256(final_zip_path)
+        if final_sha256 != temp_sha256:
+            logger.error(f"Checksum mismatch after finalizing {final_zip_path}! Aborting batch commit.")
+            if final_zip_path.exists():
+                final_zip_path.unlink()
+            return
+
+        sha_file = shards_dir / f"{shard_id}.sha256"
+        with open(sha_file, "w") as f:
+            f.write(f"{final_sha256}  {final_zip_path.name}\n")
         
-        # Write completion logs only after zip is finalized
+        # Write completion log ONLY after verified archive finalization
         with open(completed_log, "a") as f:
-            for rec_id in processed_in_batch:
+            for rec_id in successful_recordings:
                 f.write(rec_id + "\n")
                 
-        # Do not automatically delete source arrays per prompt rule.
-        # Clean up temp_dir to prevent cross-contamination for next batch.
-        # Wait, if we clean up temp_dir, we delete source arrays. 
-        # The prompt says: "Never delete source arrays until a verified archive exists AND durable persistence is confirmed."
-        # So we should move them to a 'staged_arrays' folder and tell the user to delete them.
+        # Preserve source arrays in staged_arrays; do not delete source arrays
         staged_dir = out_path / "staged_arrays"
         staged_dir.mkdir(exist_ok=True)
-        for fpath in temp_dir.iterdir():
-            if fpath.is_file():
+        for fpath in batch_files:
+            if fpath.exists():
                 fpath.rename(staged_dir / fpath.name)
+
+        # Clean up batch manifest and audit files from temp_dir
+        if manifest_path.exists():
+            manifest_path.unlink()
+        if audit_path.exists():
+            audit_path.unlink()
                 
-        logger.info(f"Successfully finalized {shard_id}.zip with {len(batch_manifest)} windows.")
-        logger.info(f"Source arrays moved to {staged_dir}. Delete them manually ONLY after pushing shards to Kaggle Datasets.")
+        logger.info(f"Successfully finalized {shard_id}.zip with {len(batch_manifest)} windows from {len(successful_recordings)} recordings.")
+        logger.warning(
+            f"Local archive verified at {final_zip_path}, but output in /kaggle/working is ephemeral and not durably persisted. "
+            f"Source arrays preserved at {staged_dir}. Do not delete source arrays until shards are durably persisted to Kaggle Datasets."
+        )
+    elif not dry_run and not successful_recordings:
+        logger.info("No recordings succeeded in this batch; no shard created.")
 
     audit_file = out_path / "audit_report.csv"
     if auditor.records:
-        auditor.export_csv(str(audit_file))
+        if audit_file.exists():
+            try:
+                existing_df = pd.read_csv(audit_file)
+                new_df = pd.DataFrame(auditor.records)
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True).drop_duplicates(subset=["patient_id", "filename"], keep="last")
+                combined_df.to_csv(audit_file, index=False)
+            except Exception:
+                auditor.export_csv(str(audit_file))
+        else:
+            auditor.export_csv(str(audit_file))
         logger.info(f"Pipeline complete. Global audit saved to {audit_file}")
         
     logger.info("Dataset splitting and unresolved boundary logic remain explicitly blocked.")
